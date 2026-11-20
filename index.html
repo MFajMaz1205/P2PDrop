@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html lang="fr" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AeroDrop P2P — Transfert de fichiers direct et illimité</title>
+    <!-- Police Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PeerJS pour WebRTC DataChannels -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        slate: {
+                            850: '#151e32',
+                            950: '#090d16',
+                        }
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'float': 'float 6s ease-in-out infinite',
+                    },
+                    keyframes: {
+                        float: {
+                            '0%, 100%': { transform: 'translateY(0)' },
+                            '50%': { transform: 'translateY(-8px)' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        /* Effets Glassmorphism et arrière-plan subtil */
+        body {
+            background-color: #090d16;
+            background-image: 
+                radial-gradient(at 15% 15%, rgba(56, 189, 248, 0.12) 0px, transparent 50%),
+                radial-gradient(at 85% 85%, rgba(99, 102, 241, 0.12) 0px, transparent 50%);
+            min-height: 100vh;
+            color: #f8fafc;
+        }
+
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.65);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        .glass-card {
+            background: rgba(30, 41, 59, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .drop-zone-active {
+            border-color: #38bdf8 !important;
+            background: rgba(56, 189, 248, 0.08) !important;
+            transform: scale(1.01);
+        }
+
+        /* Barre de défilement personnalisée */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.5);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(71, 85, 105, 0.6);
+            border-radius: 9999px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(100, 116, 139, 0.8);
+        }
+    </style>
+</head>
+<body class="antialiased selection:bg-sky-500/30 selection:text-sky-200 flex flex-col justify-between p-4 sm:p-6 md:p-8">
+
+    <!-- Conteneur Notifications Toast -->
+    <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col gap-2.5 max-w-sm w-full pointer-events-none"></div>
+
+    <!-- En-tête -->
+    <header class="max-w-3xl w-full mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 mb-8">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-500 flex items-center justify-center shadow-lg shadow-sky-500/20">
+                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold tracking-tight bg-gradient-to-r from-white to-slate-300 bg-clip-text text-transparent">
+                    AeroDrop <span class="text-xs font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-400 border border-sky-500/20 ml-1">P2P Direct</span>
+                </h1>
+                <p class="text-xs text-slate-400">Zéro serveur de stockage • Aucune limite de poids</p>
+            </div>
+        </div>
+
+        <!-- Badge de statut global -->
+        <div id="status-badge" class="flex items-center gap-2.5 px-3.5 py-1.5 rounded-full glass-card text-xs font-medium text-slate-300 transition-all">
+            <span id="status-dot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
+            <span id="status-text">Initialisation réseau...</span>
+        </div>
+    </header>
+
+    <!-- Conteneur Principal -->
+    <main class="max-w-2xl w-full mx-auto my-auto">
+        <div class="glass-panel rounded-3xl p-5 sm:p-8 transition-all">
+            
+            <!-- Sélecteur d'onglets (Envoyer / Recevoir) -->
+            <div class="grid grid-cols-2 gap-2 p-1.5 rounded-2xl bg-slate-950/70 border border-white/5 mb-7">
+                <button id="tab-send" onclick="switchMode('send')" class="flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-semibold transition-all bg-slate-800 text-white shadow-sm">
+                    <svg class="w-4 h-4 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+                    </svg>
+                    Envoyer un fichier
+                </button>
+                <button id="tab-receive" onclick="switchMode('receive')" class="flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-medium text-slate-400 hover:text-slate-200 transition-all">
+                    <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                    </svg>
+                    Recevoir un fichier
+                </button>
+            </div>
+
+            <!-- ==================== VUE ENVOYER ==================== -->
+            <section id="view-send" class="space-y-6">
+                
+                <!-- Zone Drag & Drop -->
+                <div id="drop-zone" class="relative group cursor-pointer rounded-2xl border-2 border-dashed border-slate-700 hover:border-sky-500/60 bg-slate-900/40 hover:bg-slate-900/60 p-8 sm:p-10 text-center transition-all duration-200">
+                    <input type="file" id="file-input" class="hidden" />
+                    
+                    <div class="w-14 h-14 mx-auto mb-4 rounded-2xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400 group-hover:scale-110 transition-transform duration-200">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                        </svg>
+                    </div>
+                    <h2 class="text-base sm:text-lg font-semibold text-white mb-1">Glissez-déposez votre fichier ici</h2>
+                    <p class="text-xs sm:text-sm text-slate-400 mb-4">ou <span class="text-sky-400 font-medium underline underline-offset-4">parcourez votre appareil</span></p>
+                    <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/80 text-[11px] text-slate-400 border border-white/5">
+                        <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                        </svg>
+                        Chiffrement WebRTC de bout en bout • Taille illimitée
+                    </div>
+                </div>
+
+                <!-- Détails du fichier sélectionné -->
+                <div id="selected-file-card" class="hidden glass-card rounded-2xl p-4 sm:p-5 space-y-4">
+                    <div class="flex items-center justify-between gap-4">
+                        <div class="flex items-center gap-3.5 min-w-0">
+                            <div class="w-11 h-11 rounded-xl bg-indigo-500/15 border border-indigo-500/20 flex items-center justify-center text-indigo-400 shrink-0">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                </svg>
+                            </div>
+                            <div class="min-w-0">
+                                <p id="send-file-name" class="text-sm font-semibold text-white truncate">document.zip</p>
+                                <div class="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
+                                    <span id="send-file-size" class="font-medium text-sky-400">0 Mo</span>
+                                    <span>•</span>
+                                    <span id="send-file-type" class="truncate">application/octet-stream</span>
+                                </div>
+                            </div>
+                        </div>
+                        <button id="btn-clear-file" onclick="clearSelectedFile()" title="Changer de fichier" class="p-2 rounded-xl text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors shrink-0">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
+
+                    <!-- Zone de partage du code -->
+                    <div id="share-code-box" class="pt-3 border-t border-white/5">
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-950/80 p-3.5 rounded-xl border border-white/5">
+                            <div>
+                                <span class="block text-[11px] uppercase tracking-wider text-slate-400 font-semibold">Code de réception P2P</span>
+                                <div class="flex items-center gap-2 mt-0.5">
+                                    <span id="my-peer-code" class="text-2xl font-mono font-bold tracking-widest text-sky-400">------</span>
+                                    <span id="waiting-peer-spinner" class="inline-flex items-center gap-1.5 text-xs text-amber-400/90 bg-amber-400/10 px-2 py-0.5 rounded-md">
+                                        <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
+                                        En attente du pair...
+                                    </span>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button onclick="copyCode()" class="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-white transition-all border border-white/5">
+                                    <svg class="w-4 h-4 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                    </svg>
+                                    Copier code
+                                </button>
+                                <button onclick="copyShareLink()" class="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 text-xs font-semibold text-sky-300 transition-all border border-sky-500/30">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+                                    </svg>
+                                    Lien direct
+                                </button>
+                            </div>
+                        </div>
+                        <p class="text-[11px] text-slate-400 mt-2.5 flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5 text-sky-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            Gardez cet onglet ouvert. Le transfert démarrera automatiquement dès la connexion du destinataire.
+                        </p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ==================== VUE RECEVOIR ==================== -->
+            <section id="view-receive" class="hidden space-y-6">
+                <div class="glass-card rounded-2xl p-6 text-center space-y-5">
+                    <div class="w-14 h-14 mx-auto rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <h2 class="text-lg font-semibold text-white">Recevoir un fichier en direct</h2>
+                        <p class="text-xs sm:text-sm text-slate-400 mt-1">Saisissez le code à 6 caractères fourni par l'expéditeur</p>
+                    </div>
+
+                    <div class="max-w-xs mx-auto space-y-3">
+                        <input 
+                            type="text" 
+                            id="remote-code-input" 
+                            maxlength="6" 
+                            placeholder="EX: A7X9K2"
+                            class="w-full text-center font-mono text-2xl font-bold tracking-[0.25em] uppercase py-3.5 px-4 rounded-xl bg-slate-950/90 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white placeholder:text-slate-600 outline-none transition-all"
+                        />
+                        <button id="btn-connect" onclick="connectToSender()" class="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-semibold text-sm shadow-lg shadow-indigo-500/25 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                            </svg>
+                            Se connecter et télécharger
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ==================== PROGRESSION DU TRANSFERT (COMMUNE) ==================== -->
+            <section id="transfer-progress-box" class="hidden mt-6 glass-card rounded-2xl p-5 border border-sky-500/20 space-y-4">
+                <div class="flex items-center justify-between gap-2">
+                    <div class="min-w-0">
+                        <span id="transfer-direction-label" class="text-[11px] font-bold uppercase tracking-wider text-sky-400">Envoi en cours...</span>
+                        <h3 id="transfer-file-name" class="text-sm font-semibold text-white truncate mt-0.5">fichier.iso</h3>
+                    </div>
+                    <span id="transfer-percentage" class="text-xl font-bold font-mono text-white">0%</span>
+                </div>
+
+                <!-- Barre de progression fluide -->
+                <div class="w-full h-3 bg-slate-950 rounded-full overflow-hidden p-0.5 border border-white/5">
+                    <div id="transfer-bar" class="h-full w-0 rounded-full bg-gradient-to-r from-sky-400 via-indigo-500 to-emerald-400 transition-all duration-150 ease-out"></div>
+                </div>
+
+                <!-- Métriques temps réel -->
+                <div class="grid grid-cols-3 gap-2 pt-1 text-xs">
+                    <div class="bg-slate-950/50 rounded-xl p-2.5 border border-white/5">
+                        <span class="block text-slate-400 text-[11px]">Transféré</span>
+                        <span id="transfer-bytes" class="font-semibold text-slate-200 font-mono mt-0.5 block">0 Mo / 0 Mo</span>
+                    </div>
+                    <div class="bg-slate-950/50 rounded-xl p-2.5 border border-white/5">
+                        <span class="block text-slate-400 text-[11px]">Vitesse P2P</span>
+                        <span id="transfer-speed" class="font-semibold text-emerald-400 font-mono mt-0.5 block">0.0 Mo/s</span>
+                    </div>
+                    <div class="bg-slate-950/50 rounded-xl p-2.5 border border-white/5">
+                        <span class="block text-slate-400 text-[11px]">Temps restant</span>
+                        <span id="transfer-eta" class="font-semibold text-indigo-300 font-mono mt-0.5 block">Calcul...</span>
+                    </div>
+                </div>
+
+                <!-- Bouton de sauvegarde manuel si besoin après réception -->
+                <div id="manual-save-container" class="hidden pt-2">
+                    <a id="manual-save-btn" class="w-full py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-emerald-500/20">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                        </svg>
+                        Enregistrer le fichier sur l'appareil
+                    </a>
+                </div>
+            </section>
+
+        </div>
+
+        <!-- ==================== HISTORIQUE DE SESSION ==================== -->
+        <div id="history-section" class="hidden mt-6 glass-panel rounded-2xl p-5">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-2">
+                    <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    Transferts de cette session
+                </h3>
+                <span id="history-count" class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">0</span>
+            </div>
+            <ul id="history-list" class="space-y-2 max-h-48 overflow-y-auto pr-1"></ul>
+        </div>
+    </main>
+
+    <!-- Pied de page -->
+    <footer class="max-w-3xl w-full mx-auto mt-8 text-center text-xs text-slate-500">
+        <p>Propulsé par WebRTC DataChannels • Transfert direct navigateur-à-navigateur sans stockage cloud.</p>
+    </footer>
+
+    <script>
+        /**
+         * AERODROP P2P - MOTEUR DE TRANSFERT WEBRTC PAR STREAMING (CHUNKS)
+         * Gestion de la backpressure via RTCDataChannel.bufferedAmount pour éviter la saturation RAM.
+         */
+
+        // Configuration globale
+        const PEER_PREFIX = 'aerodrop-p2p-v1-';
+        const CHUNK_SIZE = 64 * 1024; // 64 Ko par morceau (optimal pour WebRTC)
+        const MAX_BUFFERED_AMOUNT = 4 * 1024 * 1024; // 4 Mo max dans le tampon d'envoi avant pause (backpressure)
+
+        // État de l'application
+        let peer = null;
+        let myShortCode = '';
+        let currentConn = null;
+        let currentMode = 'send';
+        let selectedFile = null;
+        let isTransferring = false;
+        let sessionHistory = [];
+
+        // État de réception en streaming
+        let incomingMeta = null;
+        let receivedChunks = [];
+        let receivedBytes = 0;
+        let transferStartTime = 0;
+        let lastUiUpdateTime = 0;
+
+        // Éléments DOM
+        const dom = {
+            statusDot: document.getElementById('status-dot'),
+            statusText: document.getElementById('status-text'),
+            tabSend: document.getElementById('tab-send'),
+            tabReceive: document.getElementById('tab-receive'),
+            viewSend: document.getElementById('view-send'),
+            viewReceive: document.getElementById('view-receive'),
+            dropZone: document.getElementById('drop-zone'),
+            fileInput: document.getElementById('file-input'),
+            selectedFileCard: document.getElementById('selected-file-card'),
+            sendFileName: document.getElementById('send-file-name'),
+            sendFileSize: document.getElementById('send-file-size'),
+            sendFileType: document.getElementById('send-file-type'),
+            myPeerCode: document.getElementById('my-peer-code'),
+            waitingPeerSpinner: document.getElementById('waiting-peer-spinner'),
+            remoteCodeInput: document.getElementById('remote-code-input'),
+            btnConnect: document.getElementById('btn-connect'),
+            progressBox: document.getElementById('transfer-progress-box'),
+            directionLabel: document.getElementById('transfer-direction-label'),
+            transferFileName: document.getElementById('transfer-file-name'),
+            transferPercentage: document.getElementById('transfer-percentage'),
+            transferBar: document.getElementById('transfer-bar'),
+            transferBytes: document.getElementById('transfer-bytes'),
+            transferSpeed: document.getElementById('transfer-speed'),
+            transferEta: document.getElementById('transfer-eta'),
+            manualSaveContainer: document.getElementById('manual-save-container'),
+            manualSaveBtn: document.getElementById('manual-save-btn'),
+            historySection: document.getElementById('history-section'),
+            historyList: document.getElementById('history-list'),
+            historyCount: document.getElementById('history-count'),
+            toastContainer: document.getElementById('toast-container')
+        };
+
+        /**
+         * Génère un code alphanumérique lisible de 6 caractères (sans caractères ambigus 0/O, 1/I/L)
+         */
+        function generateShortCode(length = 6) {
+            const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+            let result = '';
+            const array = new Uint32Array(length);
+            window.crypto.getRandomValues(array);
+            for (let i = 0; i < length; i++) {
+                result += chars[array[i] % chars.length];
+            }
+            return result;
+        }
+
+        /**
+         * Formate les octets en unités lisibles (Ko, Mo, Go, To)
+         */
+        function formatBytes(bytes, decimals = 2) {
+            if (!bytes || bytes === 0) return '0 Octet';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Octets', 'Ko', 'Mo', 'Go', 'To', 'Po'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+
+        /**
+         * Formate les secondes en temps lisible (ex: 1m 24s)
+         */
+        function formatDuration(seconds) {
+            if (!isFinite(seconds) || seconds < 0) return 'Calcul...';
+            if (seconds < 1) return '< 1s';
+            const hrs = Math.floor(seconds / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            if (hrs > 0) return `${hrs}h ${mins}m`;
+            if (mins > 0) return `${mins}m ${secs}s`;
+            return `${secs}s`;
+        }
+
+        /**
+         * Affiche une notification Toast élégante
+         */
+        function showToast(message, type = 'info') {
+            const toast = document.createElement('div');
+            const colors = {
+                info: 'border-sky-500/30 bg-slate-900/95 text-slate-100',
+                success: 'border-emerald-500/40 bg-slate-900/95 text-emerald-300',
+                error: 'border-rose-500/40 bg-slate-900/95 text-rose-300',
+                warning: 'border-amber-500/40 bg-slate-900/95 text-amber-300'
+            };
+            const icons = {
+                info: `<svg class="w-5 h-5 text-sky-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+                success: `<svg class="w-5 h-5 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+                error: `<svg class="w-5 h-5 text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+                warning: `<svg class="w-5 h-5 text-amber-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>`
+            };
+
+            toast.className = `pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl border shadow-xl backdrop-blur-md text-xs sm:text-sm font-medium transition-all duration-300 translate-x-full opacity-0 ${colors[type]}`;
+            toast.innerHTML = `${icons[type]}<span>${message}</span>`;
+
+            dom.toastContainer.appendChild(toast);
+
+            // Animation d'entrée
+            requestAnimationFrame(() => {
+                toast.classList.remove('translate-x-full', 'opacity-0');
+            });
+
+            // Suppression automatique
+            setTimeout(() => {
+                toast.classList.add('translate-x-full', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3800);
+        }
+
+        /**
+         * Met à jour l'indicateur de statut global
+         */
+        function updateStatus(state, text) {
+            dom.statusText.textContent = text;
+            dom.statusDot.className = 'w-2.5 h-2.5 rounded-full ';
+            
+            switch (state) {
+                case 'init':
+                    dom.statusDot.classList.add('bg-amber-400', 'animate-pulse');
+                    break;
+                case 'ready':
+                    dom.statusDot.classList.add('bg-sky-400');
+                    break;
+                case 'connected':
+                    dom.statusDot.classList.add('bg-emerald-400', 'shadow-[0_0_8px_#34d399]');
+                    break;
+                case 'transferring':
+                    dom.statusDot.classList.add('bg-indigo-400', 'animate-ping');
+                    break;
+                case 'error':
+                    dom.statusDot.classList.add('bg-rose-500');
+                    break;
+            }
+        }
+
+        /**
+         * Initialise l'instance PeerJS (signalisation WebRTC)
+         */
+        function initPeer() {
+            myShortCode = generateShortCode(6);
+            const fullPeerId = PEER_PREFIX + myShortCode;
+
+            updateStatus('init', 'Connexion au serveur de signalisation...');
+
+            // Serveurs STUN publics Google pour traverser les NAT/Pare-feux
+            peer = new Peer(fullPeerId, {
+                config: {
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' },
+                        { urls: 'stun:stun2.l.google.com:19302' }
+                    ]
+                },
+                debug: 1
+            });
+
+            peer.on('open', (id) => {
+                dom.myPeerCode.textContent = myShortCode;
+                updateStatus('ready', 'Prêt • En attente d’un pair');
+                checkUrlParams();
+            });
+
+            // Lorsqu'un destinataire se connecte à notre code
+            peer.on('connection', (conn) => {
+                if (isTransferring) {
+                    conn.close();
+                    return;
+                }
+                currentConn = conn;
+                setupSenderConnection(conn);
+            });
+
+            peer.on('disconnected', () => {
+                updateStatus('init', 'Déconnecté du réseau, reconnexion...');
+                peer.reconnect();
+            });
+
+            peer.on('error', (err) => {
+                console.error('Erreur PeerJS:', err);
+                if (err.type === 'peer-unavailable') {
+                    updateStatus('error', 'Code introuvable ou expiré');
+                    showToast('Code invalide ou l’expéditeur n’est plus en ligne.', 'error');
+                    dom.btnConnect.disabled = false;
+                    dom.btnConnect.innerHTML = `Se connecter et télécharger`;
+                } else if (err.type === 'unavailable-id') {
+                    // Collision rare d'ID, on régénère
+                    peer.destroy();
+                    initPeer();
+                } else {
+                    updateStatus('error', 'Erreur réseau P2P');
+                    showToast(`Erreur WebRTC : ${err.type}`, 'error');
+                }
+            });
+        }
+
+        /**
+         * Vérifie si un code est présent dans l'URL (?code=XXXXXX)
+         */
+        function checkUrlParams() {
+            const params = new URLSearchParams(window.location.search);
+            const codeParam = params.get('code');
+            if (codeParam && codeParam.trim().length === 6) {
+                switchMode('receive');
+                dom.remoteCodeInput.value = codeParam.trim().toUpperCase();
+                showToast('Code détecté depuis le lien de partage !', 'info');
+            }
+        }
+
+        /**
+         * Bascule entre l'onglet Envoyer et l'onglet Recevoir
+         */
+        function switchMode(mode) {
+            if (isTransferring) {
+                showToast('Impossible de changer d’onglet pendant un transfert actif.', 'warning');
+                return;
+            }
+            currentMode = mode;
+
+            if (mode === 'send') {
+                dom.tabSend.className = 'flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-semibold transition-all bg-slate-800 text-white shadow-sm';
+                dom.tabReceive.className = 'flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-medium text-slate-400 hover:text-slate-200 transition-all';
+                dom.viewSend.classList.remove('hidden');
+                dom.viewReceive.classList.add('hidden');
+            } else {
+                dom.tabReceive.className = 'flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-semibold transition-all bg-slate-800 text-white shadow-sm';
+                dom.tabSend.className = 'flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-medium text-slate-400 hover:text-slate-200 transition-all';
+                dom.viewReceive.classList.remove('hidden');
+                dom.viewSend.classList.add('hidden');
+                dom.remoteCodeInput.focus();
+            }
+        }
+
+        /**
+         * Gestion de la sélection de fichier (Drag & Drop + Input)
+         */
+        function handleFileSelection(file) {
+            if (!file) return;
+            if (isTransferring) {
+                showToast('Un transfert est déjà en cours.', 'warning');
+                return;
+            }
+
+            selectedFile = file;
+            dom.sendFileName.textContent = file.name;
+            dom.sendFileSize.textContent = formatBytes(file.size);
+            dom.sendFileType.textContent = file.type || 'Fichier binaire';
+
+            dom.dropZone.classList.add('hidden');
+            dom.selectedFileCard.classList.remove('hidden');
+            dom.progressBox.classList.add('hidden');
+
+            showToast('Fichier prêt. Partagez le code avec votre destinataire.', 'info');
+
+            // Si un destinataire est déjà connecté, lancer l'envoi immédiatement
+            if (currentConn && currentConn.open) {
+                startStreamingFile(currentConn, selectedFile);
+            }
+        }
+
+        function clearSelectedFile() {
+            if (isTransferring) return;
+            selectedFile = null;
+            dom.fileInput.value = '';
+            dom.selectedFileCard.classList.add('hidden');
+            dom.dropZone.classList.remove('hidden');
+            dom.progressBox.classList.add('hidden');
+        }
+
+        /**
+         * Copie du code court ou du lien complet dans le presse-papier
+         */
+        function fallbackCopyText(text, successMsg) {
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-9999px';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            try {
+                document.execCommand('copy');
+                showToast(successMsg, 'success');
+            } catch (err) {
+                showToast('Impossible de copier automatiquement.', 'error');
+            }
+            document.body.removeChild(textArea);
+        }
+
+        function copyCode() {
+            if (!myShortCode) return;
+            fallbackCopyText(myShortCode, `Code ${myShortCode} copié !`);
+        }
+
+        function copyShareLink() {
+            if (!myShortCode) return;
+            const url = new URL(window.location.href);
+            url.searchParams.set('code', myShortCode);
+            fallbackCopyText(url.toString(), 'Lien de téléchargement direct copié !');
+        }
+
+        /**
+         * CÔTÉ EXPÉDITEUR : Configuration de la connexion entrante
+         */
+        function setupSenderConnection(conn) {
+            updateStatus('connected', 'Connecté en P2P direct !');
+            dom.waitingPeerSpinner.innerHTML = `<span class="text-emerald-400 font-semibold">● Destinataire connecté</span>`;
+            showToast('Destinataire connecté en P2P direct !', 'success');
+
+            conn.on('open', () => {
+                if (selectedFile) {
+                    startStreamingFile(conn, selectedFile);
+                } else {
+                    showToast('En attente que vous sélectionniez un fichier...', 'info');
+                }
+            });
+
+            conn.on('data', (data) => {
+                // Accusé de réception final du destinataire
+                if (data && data.type === 'transfer-complete-ack') {
+                    finishTransferUI('send', selectedFile.name, selectedFile.size);
+                }
+            });
+
+            conn.on('close', () => {
+                if (isTransferring) {
+                    isTransferring = false;
+                    updateStatus('error', 'Connexion interrompue par le pair');
+                    showToast('Le destinataire s’est déconnecté pendant le transfert.', 'error');
+                } else {
+                    updateStatus('ready', 'Prêt • En attente d’un pair');
+                }
+                dom.waitingPeerSpinner.innerHTML = `En attente du pair...`;
+            });
+        }
+
+        /**
+         * CÔTÉ EXPÉDITEUR : Streaming du fichier par morceaux (Chunks) avec gestion de la Backpressure
+         * Permet d'envoyer des fichiers de plusieurs Go sans saturé la mémoire vive.
+         */
+        function startStreamingFile(conn, file) {
+            if (isTransferring) return;
+            isTransferring = true;
+
+            updateStatus('transferring', 'Transfert P2P en cours...');
+            setupProgressUI('Envoi en cours...', file.name, file.size);
+
+            // 1. Envoyer les métadonnées du fichier en premier
+            conn.send({
+                type: 'file-meta',
+                name: file.name,
+                size: file.size,
+                mime: file.type || 'application/octet-stream'
+            });
+
+            let offset = 0;
+            transferStartTime = performance.now();
+            lastUiUpdateTime = transferStartTime;
+
+            const dataChannel = conn.dataChannel;
+            // Seuil bas pour reprendre l'envoi dès que le tampon se vide
+            if (dataChannel) {
+                dataChannel.bufferedAmountLowThreshold = 512 * 1024; // 512 Ko
+            }
+
+            const reader = new FileReader();
+
+            reader.onerror = (err) => {
+                console.error('Erreur lecture fichier:', err);
+                isTransferring = false;
+                updateStatus('error', 'Erreur de lecture du fichier');
+                showToast('Erreur lors de la lecture du fichier local.', 'error');
+            };
+
+            reader.onload = (e) => {
+                if (!conn.open) {
+                    isTransferring = false;
+                    return;
+                }
+
+                const chunkBuffer = e.target.result;
+                conn.send(chunkBuffer);
+                offset += chunkBuffer.byteLength;
+
+                updateProgressMetrics(offset, file.size);
+
+                if (offset < file.size) {
+                    scheduleNextChunk();
+                } else {
+                    // Tous les morceaux ont été poussés dans le DataChannel
+                    conn.send({ type: 'file-end' });
+                }
+            };
+
+            function readNextChunk() {
+                const slice = file.slice(offset, offset + CHUNK_SIZE);
+                reader.readAsArrayBuffer(slice);
+            }
+
+            function scheduleNextChunk() {
+                // Contrôle de flux (Backpressure) : si le tampon WebRTC dépasse 4 Mo, on attend qu'il se vide
+                if (dataChannel && dataChannel.bufferedAmount > MAX_BUFFERED_AMOUNT) {
+                    const onBufferLow = () => {
+                        dataChannel.removeEventListener('bufferedamountlow', onBufferLow);
+                        readNextChunk();
+                    };
+                    dataChannel.addEventListener('bufferedamountlow', onBufferLow);
+                } else {
+                    // Yield au thread principal toutes les ~20 itérations pour garder l'UI fluide à 60fps
+                    if ((offset / CHUNK_SIZE) % 20 === 0) {
+                        setTimeout(readNextChunk, 0);
+                    } else {
+                        readNextChunk();
+                    }
+                }
+            }
+
+            // Démarrer la lecture du premier chunk
+            readNextChunk();
+        }
+
+        /**
+         * CÔTÉ DESTINATAIRE : Connexion au code de l'expéditeur
+         */
+        function connectToSender() {
+            const rawCode = dom.remoteCodeInput.value.trim().toUpperCase();
+            if (rawCode.length !== 6) {
+                showToast('Veuillez saisir un code valide à 6 caractères.', 'warning');
+                dom.remoteCodeInput.focus();
+                return;
+            }
+
+            if (rawCode === myShortCode) {
+                showToast('Vous ne pouvez pas vous connecter à votre propre code dans le même onglet.', 'warning');
+                return;
+            }
+
+            dom.btnConnect.disabled = true;
+            dom.btnConnect.innerHTML = `
+                <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Connexion au pair...
+            `;
+            updateStatus('init', `Recherche de ${rawCode}...`);
+
+            const targetPeerId = PEER_PREFIX + rawCode;
+            const conn = peer.connect(targetPeerId, {
+                reliable: true // Garantit l'ordre et l'intégrité des paquets (mode TCP-like sur SCTP)
+            });
+
+            currentConn = conn;
+
+            conn.on('open', () => {
+                updateStatus('connected', 'Connecté en P2P direct !');
+                showToast('Connecté à l’expéditeur ! En attente du fichier...', 'success');
+                dom.btnConnect.innerHTML = `Connecté • En attente des données...`;
+            });
+
+            conn.on('data', (data) => {
+                handleIncomingData(conn, data);
+            });
+
+            conn.on('close', () => {
+                if (isTransferring) {
+                    isTransferring = false;
+                    updateStatus('error', 'Connexion perdue');
+                    showToast('Connexion interrompue avant la fin du téléchargement.', 'error');
+                } else {
+                    updateStatus('ready', 'Prêt');
+                }
+                resetReceiveButton();
+            });
+
+            conn.on('error', (err) => {
+                console.error('Erreur connexion:', err);
+                showToast('Échec de la connexion P2P.', 'error');
+                resetReceiveButton();
+            });
+        }
+
+        function resetReceiveButton() {
+            dom.btnConnect.disabled = false;
+            dom.btnConnect.innerHTML = `
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+                Se connecter et télécharger
+            `;
+        }
+
+        /**
+         * CÔTÉ DESTINATAIRE : Réception des métadonnées et des chunks binaires
+         */
+        function handleIncomingData(conn, data) {
+            // 1. Réception des métadonnées
+            if (data && typeof data === 'object' && data.type === 'file-meta') {
+                incomingMeta = data;
+                receivedChunks = [];
+                receivedBytes = 0;
+                isTransferring = true;
+                transferStartTime = performance.now();
+                lastUiUpdateTime = transferStartTime;
+
+                updateStatus('transferring', 'Réception P2P en cours...');
+                setupProgressUI('Réception en cours...', incomingMeta.name, incomingMeta.size);
+                dom.manualSaveContainer.classList.add('hidden');
+                return;
+            }
+
+            // 2. Signal de fin de fichier
+            if (data && typeof data === 'object' && data.type === 'file-end') {
+                assembleAndDownloadFile(conn);
+                return;
+            }
+
+            // 3. Morceau binaire (ArrayBuffer ou Uint8Array)
+            if (isTransferring && incomingMeta) {
+                receivedChunks.push(data);
+                const byteLength = data.byteLength || data.size || 0;
+                receivedBytes += byteLength;
+                updateProgressMetrics(receivedBytes, incomingMeta.size);
+            }
+        }
+
+        /**
+         * Reconstitue le Blob final et déclenche le téléchargement navigateur
+         */
+        function assembleAndDownloadFile(conn) {
+            try {
+                const blob = new Blob(receivedChunks, { type: incomingMeta.mime });
+                const downloadUrl = URL.createObjectURL(blob);
+
+                // Déclenchement automatique du téléchargement
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = incomingMeta.name;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+
+                // Configuration du bouton de secours
+                dom.manualSaveBtn.href = downloadUrl;
+                dom.manualSaveBtn.download = incomingMeta.name;
+                dom.manualSaveContainer.classList.remove('hidden');
+
+                // Confirmer à l'expéditeur que tout est bien reçu
+                if (conn && conn.open) {
+                    conn.send({ type: 'transfer-complete-ack' });
+                }
+
+                finishTransferUI('receive', incomingMeta.name, incomingMeta.size);
+                resetReceiveButton();
+
+                // Libérer le tableau des chunks pour alléger la RAM (le Blob garde la référence)
+                receivedChunks = [];
+            } catch (err) {
+                console.error('Erreur assemblage Blob:', err);
+                isTransferring = false;
+                updateStatus('error', 'Erreur mémoire lors de la sauvegarde');
+                showToast('Erreur lors de l’assemblage du fichier.', 'error');
+            }
+        }
+
+        /**
+         * Mise à jour de l'interface de progression
+         */
+        function setupProgressUI(directionText, fileName, totalSize) {
+            dom.progressBox.classList.remove('hidden');
+            dom.directionLabel.textContent = directionText;
+            dom.directionLabel.className = 'text-[11px] font-bold uppercase tracking-wider text-sky-400';
+            dom.transferFileName.textContent = fileName;
+            dom.transferPercentage.textContent = '0%';
+            dom.transferBar.style.width = '0%';
+            dom.transferBytes.textContent = `0 Octet / ${formatBytes(totalSize)}`;
+            dom.transferSpeed.textContent = '0.0 Mo/s';
+            dom.transferEta.textContent = 'Calcul...';
+        }
+
+        function updateProgressMetrics(transferred, total) {
+            const now = performance.now();
+            // Limiter les mises à jour DOM à toutes les 100ms pour des performances optimales
+            if (now - lastUiUpdateTime < 100 && transferred < total) return;
+            lastUiUpdateTime = now;
+
+            const percent = total > 0 ? Math.min(100, Math.round((transferred / total) * 100)) : 100;
+            const elapsedSeconds = (now - transferStartTime) / 1000;
+            const bytesPerSec = elapsedSeconds > 0 ? transferred / elapsedSeconds : 0;
+            const remainingBytes = Math.max(0, total - transferred);
+            const etaSeconds = bytesPerSec > 0 ? remainingBytes / bytesPerSec : 0;
+
+            dom.transferPercentage.textContent = `${percent}%`;
+            dom.transferBar.style.width = `${percent}%`;
+            dom.transferBytes.textContent = `${formatBytes(transferred)} / ${formatBytes(total)}`;
+            dom.transferSpeed.textContent = `${formatBytes(bytesPerSec, 1)}/s`;
+            dom.transferEta.textContent = transferred >= total ? 'Terminé' : formatDuration(etaSeconds);
+        }
+
+        function finishTransferUI(direction, fileName, fileSize) {
+            isTransferring = false;
+            updateStatus('connected', 'Transfert terminé avec succès !');
+            dom.directionLabel.textContent = direction === 'send' ? '✓ Envoyé avec succès' : '✓ Reçu et téléchargé';
+            dom.directionLabel.className = 'text-[11px] font-bold uppercase tracking-wider text-emerald-400';
+            dom.transferPercentage.textContent = '100%';
+            dom.transferBar.style.width = '100%';
+            dom.transferEta.textContent = '0s';
+
+            showToast(
+                direction === 'send' 
+                    ? `Fichier "${fileName}" envoyé avec succès !` 
+                    : `Fichier "${fileName}" téléchargé !`,
+                'success'
+            );
+
+            addToHistory(direction, fileName, fileSize);
+        }
+
+        /**
+         * Gestion de l'historique de session
+         */
+        function addToHistory(direction, name, size) {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+
+            sessionHistory.unshift({ direction, name, size, time: timeStr });
+            dom.historySection.classList.remove('hidden');
+            dom.historyCount.textContent = sessionHistory.length;
+
+            dom.historyList.innerHTML = sessionHistory.map(item => `
+                <li class="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-slate-900/60 border border-white/5 text-xs">
+                    <div class="flex items-center gap-2.5 min-w-0">
+                        <span class="p-1.5 rounded-lg ${item.direction === 'send' ? 'bg-sky-500/15 text-sky-400' : 'bg-emerald-500/15 text-emerald-400'}">
+                            ${item.direction === 'send' 
+                                ? `<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>`
+                                : `<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>`
+                            }
+                        </span>
+                        <span class="font-medium text-slate-200 truncate">${item.name}</span>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0 text-slate-400 font-mono text-[11px]">
+                        <span>${formatBytes(item.size)}</span>
+                        <span>•</span>
+                        <span>${item.time}</span>
+                    </div>
+                </li>
+            `).join('');
+        }
+
+        /**
+         * Écouteurs d'événements Drag & Drop et UI
+         */
+        function bindEvents() {
+            // Clic sur la zone de dépôt
+            dom.dropZone.addEventListener('click', () => dom.fileInput.click());
+
+            // Sélection via explorateur de fichiers
+            dom.fileInput.addEventListener('change', (e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                    handleFileSelection(e.target.files[0]);
+                }
+            });
+
+            // Événements Drag & Drop
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dom.dropZone.addEventListener(eventName, (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dom.dropZone.classList.add('drop-zone-active');
+                });
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                dom.dropZone.addEventListener(eventName, (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dom.dropZone.classList.remove('drop-zone-active');
+                });
+            });
+
+            dom.dropZone.addEventListener('drop', (e) => {
+                const dt = e.dataTransfer;
+                if (dt && dt.files && dt.files.length > 0) {
+                    handleFileSelection(dt.files[0]);
+                }
+            });
+
+            // Validation avec la touche Entrée sur le champ code
+            dom.remoteCodeInput.addEventListener('keyup', (e) => {
+                if (e.key === 'Enter') {
+                    connectToSender();
+                }
+            });
+        }
+
+        // Initialisation au chargement de la page
+        window.addEventListener('DOMContentLoaded', () => {
+            bindEvents();
+            initPeer();
+        });
+    </script>
+</body>
+</html>
